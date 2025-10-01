@@ -1,0 +1,111 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_URI")
+}
+
+/* ---------- ENUMS ---------- */
+enum DayOfWeek {
+  SUN  // 0
+  MON  // 1
+  TUE  // 2
+  WED  // 3
+  THU  // 4
+  FRI  // 5
+  SAT  // 6
+}
+
+enum ChatType {
+  private
+  group
+  supergroup
+  channel
+}
+
+enum WizardStep {
+  IDLE
+  PICK_DAYS
+  PICK_TIME
+  PICK_TEXT
+  CONFIRM
+}
+
+/* ---------- ACCESS / USERS ---------- */
+/** Пользователи, которым разрешено управлять ботом */
+model BotAdmin {
+  userId    BigInt   @id           // Telegram user id (bigint)
+  username  String?                 // @username (если есть)
+  addedAt   DateTime @default(now())
+  // связи
+  createdCommands ScheduleCommand[] @relation("CommandCreatedBy")
+}
+
+/* ---------- CHATS / GROUPS ---------- */
+model BotGroup {
+  id        BigInt    @id          // Telegram chat id (у групп — отрицательные bigint)
+  title     String
+  type      ChatType
+  addedAt   DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // плановые рассылки, привязанные к этому чату
+  schedules ScheduleCommand[]
+
+  @@index([type])
+  @@index([addedAt])
+}
+
+/* ---------- SCHEDULED COMMANDS ---------- */
+/**
+ * «Команда-рассылка» — это сущность, которую ты создаёшь из Телеграма:
+ * выбираешь дни недели, время, текст. Каждый такой набор хранится как запись.
+ * Можно держать несколько команд на один чат.
+ */
+model ScheduleCommand {
+  id           String      @id @default(cuid())
+  chatId       BigInt
+  title        String      @default("")    // человекочитаемое имя (опционально; можно автогенерить)
+  message      String                      // текст сообщения
+  days         DayOfWeek[]                 // список дней, когда слать (enum массив)
+  /** Храним время как количество минут с полуночи (0..1439). Удобно и типобезопасно */
+  timeMinutes  Int                         // например 10:30 -> 630
+  tz           String      @default("Asia/Almaty")
+  enabled      Boolean     @default(true)
+
+  createdBy    BigInt                      // кто создал (Telegram user id)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // связи
+  group        BotGroup    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  creator      BotAdmin?   @relation("CommandCreatedBy", fields: [createdBy], references: [userId])
+
+  @@index([chatId, enabled])
+  @@index([createdBy])
+  @@index([tz])
+}
+
+/* ---------- WIZARD / СОСТОЯНИЕ ШАГОВ (опционально, если хочешь хранить в БД) ---------- */
+/**
+ * Если хочешь, чтобы пошаговый мастер (кнопки: выбрать дни → выбрать время → написать текст)
+ * переживал рестарт и работал не в памяти — можно хранить временное состояние тут.
+ * Иначе это можно вынести в Redis и не держать в Postgres.
+ */
+model ChatWizardState {
+  id           String      @id @default(cuid())
+  chatId       BigInt
+  userId       BigInt
+  step         WizardStep  @default(IDLE)
+  tempDays     DayOfWeek[] // временно выбранные дни
+  tempTimeMin  Int?        // временно выбранное время (минуты)
+  tempMessage  String?     // временный текст
+  updatedAt    DateTime    @updatedAt
+  createdAt    DateTime    @default(now())
+
+  @@unique([chatId, userId])  // один активный мастер на пользователя в чате
+  @@index([step])
+}
